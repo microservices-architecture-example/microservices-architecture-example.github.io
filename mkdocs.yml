@@ -295,4 +295,3 @@ nav:
     - 7. Jenkins: ./jenkins/jenkins.md
     - 8. Kubernetes: ./k8s/kubernetes.md
 
-  - Projeto: projeto/index.md
