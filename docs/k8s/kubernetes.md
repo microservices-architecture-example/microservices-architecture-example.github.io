@@ -31,7 +31,7 @@ As capturas abaixo mostram o painel do EKS com os status de todos os deploys dos
 ## Vídeo Demonstrativo
 
 <video width="100%" controls>
-  <source src="./k8s_video.mp4" type="video/mp4">
+  <source src="../assets/k8s_video.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
 
