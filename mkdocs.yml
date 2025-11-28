@@ -1,6 +1,6 @@
 site_name: Microservices Architecture Example
 site_author: Luigi Carmona
-site_url: https://microservices-architecture-example.github.io/
+site_url: https://microservices-architecture-example.github.io/homepage
 repo_url: https://github.com/microservices-architecture-example/microservices-architecture-example.github.io
 repo_name: microservices-architecture-example/microservices-architecture-example.github.io
 
@@ -148,6 +148,6 @@ nav:
     - 4. Product API: ./product/product.md
     - 5. Order API: ./order/order.md
     - 6. Exchange API: ./exchange/exchange.md
-    - 7. Jenkins: ./jenkins/jenkins.md
+    - 7. Jenkins: ./jenkins/Jenkins.md
 
   - Projeto: projeto/index.md
