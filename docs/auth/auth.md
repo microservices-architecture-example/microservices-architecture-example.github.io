@@ -1,239 +1,190 @@
-# Auth API
+# Auth Service
 
-A **Auth API** é responsável pela autenticação de usuários e geração de tokens JWT utilizados por todos os demais microserviços do domínio `store`.  
-Ela valida credenciais, emite tokens de acesso e garante a integridade das comunicações dentro da arquitetura de microsserviços.
+The **Auth Service** is the security cornerstone of the `store` domain. It is responsible for validating user credentials and issuing **JSON Web Tokens (JWT)**. These tokens are the "keys" that allow users to access protected resources across all other microservices.
 
-!!! info "Trusted layer e segurança"
-    O acesso à Auth API é realizado via **Gateway**.  
-    Após o login, o **JWT** é retornado ao cliente e utilizado nas demais requisições aos serviços protegidos (`account`, `order`, `product`, `exchange`).
+!!! info "Security & Trusted Layer"
+    *   **Gateway Integration**: The API Gateway delegates authentication to this service.
+    *   **Statelessness**: The service is stateless; it does not store sessions. Trust is established via the cryptographic signature of the JWT.
 
 ---
 
-## Visão geral
+## 🏗️ Architecture
 
-- **Service (`auth.service`)**: Implementado em **Spring Boot (Java)**.  
-  Expõe endpoints públicos para autenticação e registro de usuários.  
-  Integra-se com o `account.service` para validação de usuários e gera tokens JWT assinados com a chave definida em `JWT_SECRET_KEY`.
+The service orchestrates the login flow by verifying credentials against the **Account Service** and then using its internal **JWT Service** to sign tokens.
 
-- **Fluxo de autenticação**  
-  1. O cliente envia `email` e `password` para `/auth/login`.  
-  2. O Auth API valida as credenciais no `account.service`.  
-  3. Em caso de sucesso, é gerado e retornado o `token JWT`.  
-  4. O `gateway-service` utiliza esse token para validar requisições futuras e injetar o `id-account` nos headers.
-
-``` mermaid
+```mermaid
 classDiagram
-    namespace auth {
+    namespace Interface_Layer {
         class AuthController {
-            +register(RegisterIn RegisterIn): TokenOut
-            +login(LoginIn loginIn): TokenOut
-        }
-        class RegisterIn {
-            -String name
-            -String email
-            -String password
-        }
-        class LoginIn {
-            -String name
-            -String email
-        }
-        class TokenOut {
-            -String token
-        }
-        class SolveOut {
-            -String idAccount
+            +login(LoginIn): TokenOut
+            +register(RegisterIn): TokenOut
+            +solve(TokenOut): Map
         }
     }
-    namespace auth.service {
-        class AuthResource {
-            +register(RegisterIn RegisterIn) TokenOut
-            +login(LoginIn loginIn) TokenOut
-        }
+    namespace Core_Layer {
         class AuthService {
-            +register(Register) Regiter
-            +login(LoginIn loginIn) String
+            +login(String, String): String
+            +register(String, String, String): String
         }
-        class Register {
-            -String id
-            -String name
-            -String email
-            -String password
+        class JwtService {
+            +generate(AccountOut): String
+            +getClaims(String): Claims
+            -getKey(): SecretKey
         }
     }
-    <<Interface>> AuthController
-    AuthController ..> RegisterIn
-    AuthController ..> LoginIn
-    AuthController ..> TokenOut
+    namespace External_Integration {
+        class AccountClient {
+            +findByEmailAndPassword(LoginIn): AccountOut
+            +create(AccountIn): AccountOut
+        }
+    }
 
-    AuthController <|-- AuthResource
-    AuthResource *-- AuthService
-    AuthService ..> Register
+    AuthController --> AuthService : delegates
+    AuthService --> AccountClient : verifies credentials
+    AuthService --> JwtService : requests token
 ```
 
-## Estrutura da requisição
+---
 
-``` mermaid
-flowchart LR
-    subgraph api [Trusted Layer]
-        direction TB
-        gateway --> account
-        gateway --> others
-        gateway e4 @==>|""| auth:::red
-        auth e2 @==>|""| account
-        account --> db @{ shape: cyl, label: "Database" }
-        others --> db
+## 🔌 API Reference
+
+The API is primarily used for obtaining access tokens.
+
+### Endpoints
+
+| Method | Path | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/auth/login` | Authenticate with email/password and receive a JWT. | ❌ No |
+| `POST` | `/auth/register` | Create a new account and receive a JWT (Proxy to Account Service). | ❌ No |
+| `POST` | `/auth/solve` | Validate a token and extract claims (Internal use). | ❌ No |
+
+### Data Models
+
+#### `LoginIn`
+```json
+{
+  "email": "john@example.com",
+  "password": "secretpassword"
+}
+```
+
+#### `TokenOut`
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJKb2huIERvZSIsIm..."
+}
+```
+
+---
+
+## 🔐 Security Flow
+
+The authentication process involves a secure handshake between the Auth Service and the Account Service.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Auth as Auth Service
+    participant Account as Account Service
+    participant JWT as JWT Service
+
+    Client->>Auth: POST /login (email, password)
+    Auth->>Account: POST /account/login (email, password)
+    
+    alt Credentials Valid
+        Account-->>Auth: 200 OK (Account Details + Role)
+        Auth->>JWT: generate(Account)
+        JWT-->>Auth: Signed Token (HS256)
+        Auth-->>Client: 200 OK (Token)
+    else Invalid
+        Account-->>Auth: 404/401
+        Auth-->>Client: 401 Unauthorized
     end
-    internet e1 @==>|request| gateway:::orange
-    e1@{ animate: true }
-    e2 @{ animate: true }
-    e4 @{ animate: true }
-    classDef red fill:#fcc
-    classDef orange fill:#FCBE3E
 ```
 
-## Auth
+---
 
-``` tree
+## 🔑 JWT Implementation Details
+
+The `JwtService` handles the cryptographic operations.
+
+### Configuration
+*   **Algorithm**: `HMAC256` (HS256).
+*   **Expiration**: **2 hours** (120 minutes).
+*   **Issuer**: `Insper::PMA`.
+
+### Token Structure (Claims)
+The generated token contains the following claims:
+
+| Claim | Key | Description |
+| :--- | :--- | :--- |
+| **Subject** | `sub` | User's Name. |
+| **ID** | `jti` | User's UUID (from Account Service). |
+| **Issuer** | `iss` | `Insper::PMA`. |
+| **Role** | `role` | User's Role (e.g., `USER`, `ADMIN`). |
+| **Email** | `email` | User's Email. |
+
+### Code Snippet: Token Generation
+```java
+// Snippet from JwtService.java
+public String generate(AccountOut account) {
+    Date now = new Date();
+    return Jwts.builder()
+        .header().and()
+        .id(account.id())
+        .issuer("Insper::PMA")
+        .claims(Map.of(
+            "email", account.email(),
+            "role", account.role()
+        ))
+        .signWith(getKey()) // HMAC-SHA Key
+        .subject(account.name())
+        .notBefore(now)
+        .expiration(new Date(now.getTime() + 1000 * 60 * 120)) // 2 hours
+        .compact();
+}
+```
+
+---
+
+## ⚙️ Configuration
+
+The service is configured via `application.yaml`.
+
+```yaml
+store:
+  jwt:
+    # The secret key used to sign tokens. 
+    # In production, this is injected via environment variables.
+    secretKey: ${JWT_SECRET_KEY:changeit}
+```
+
+---
+
+## 📂 Project Structure
+
+The project follows the standard Interface/Implementation split:
+
+1.  **Interface (`auth`)**: Contains DTOs and the Feign Client interface.
+2.  **Implementation (`auth.service`)**: The Spring Boot application containing the logic.
+
+```tree
 api/
-    auth/
-        src/
-            main/
-                java/
-                    store/
-                        auth/
-                            AuthController.java
-                            LoginIn.java
-                            RegisterIn.java
-                            TokenOut.java
-        pom.xml
-        Jenkinsfile
-```
-
-??? info "Source"
-
-    === "pom.xml"
-
-        ``` { .yaml .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth/refs/heads/main/pom.xml"
-        ```
-
-    === "Jenkinsfile"
-
-        ``` { .jenkinsfile .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth/refs/heads/main/Jenkinsfile"
-        ```
-
-    === "AuthController.java"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth/refs/heads/main/src/main/java/store/auth/AuthController.java"
-        ```
-
-    === "LoginIn.java"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth/refs/heads/main/src/main/java/store/auth/LoginIn.java"
-        ```
-
-    === "RegisterIn.java"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth/refs/heads/main/src/main/java/store/auth/RegisterIn.java"
-        ```
-
-    === "TokenOut.java"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth/refs/heads/main/src/main/java/store/auth/TokenOut.java"
-        ```
-
-<!-- termynal -->
-
-``` { bash }
-> mvn clean install
-```
-
-## auth.service
-
-``` tree
-api/
-    auth.service/
-        k8s/
-            k8s.yaml
-        src/
-            main/
-                java/
-                    store/
-                        auth/
-                            AuthApplication.java
-                            AuthResource.java
-                            AuthService.java
-                            JwtService.java
-            resources/
-                application.yaml
-        pom.xml
-        Dockerfile
-        Jenkinsfile
-```
-
-??? info "Source"
-
-    === "pom.xml"
-
-        ``` { .yaml .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/pom.xml"
-        ```
-
-    === "Dockerfile"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/Dockerfile"
-        ```
-
-    === "Jenkinsfile"
-
-        ``` { .jenkinsfile .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/Jenkinsfile"
-        ```
-
-    === "k8s.yaml"
-
-        ``` { .yaml .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/k8s/k8s.yaml"
-        ```
-
-    === "application.yaml"
-
-        ``` { .yaml .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/src/main/resources/application.yaml"
-        ```
-
-    === "AuthApplication.java"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/src/main/java/store/auth/AuthApplication.java"
-        ```
-
-    === "AuthResource.java"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/src/main/java/store/auth/AuthResource.java"
-        ```
-
-    === "AuthService.java"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/src/main/java/store/auth/AuthService.java"
-        ```
-
-    === "JwtService.java"
-
-        ``` { .java .copy .select linenums='1' }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/auth.service/refs/heads/main/src/main/java/store/auth/JwtService.java"
-        ```
-
-<!-- termynal -->
-
-``` { bash }
-> mvn clean package spring-boot:run
+├── auth/                   # Interface Module
+│   ├── src/main/java/store/auth/
+│   │   ├── AuthController.java     # Feign Interface
+│   │   ├── LoginIn.java            # DTO
+│   │   ├── RegisterIn.java         # DTO
+│   │   └── TokenOut.java           # DTO
+│   └── pom.xml
+│
+└── auth.service/           # Implementation Module
+    ├── src/main/java/store/auth/
+    │   ├── AuthService.java        # Orchestration Logic
+    │   ├── JwtService.java         # JWT Signing/Parsing
+    │   └── AuthResource.java       # REST Controller
+    ├── src/main/resources/
+    │   └── application.yaml        # Config
+    ├── Dockerfile
+    └── k8s/                        # Kubernetes Manifests
 ```
