@@ -1,117 +1,121 @@
-# Exchange API
+# Exchange Service
 
-A **Exchange API** fornece serviços de conversão de moedas para o domínio `store`.  
-Ela permite consultar a taxa de câmbio entre duas moedas (`from_curr` → `to_curr`), aplicando automaticamente o spread configurado e vinculando a operação ao usuário autenticado.
+The **Exchange Service** provides real-time currency conversion rates for the `store` domain. Unlike other services in this architecture which are built with Java/Spring Boot, this service is implemented using **Python** and **FastAPI**, demonstrating the polyglot nature of the microservices architecture.
 
-!!! info "Trusted layer e segurança"
-    Toda requisição externa entra pelo **gateway**.  
-    As rotas `/exchange/**` são **protegidas**: é obrigatório enviar `Authorization: Bearer <jwt>`.
+!!! info "Polyglot Architecture"
+    This service showcases how different technologies can coexist in the same ecosystem, communicating via standard REST APIs.
 
 ---
 
-## Visão geral
+## 🏗️ Architecture
 
-- **Service (`exchange.service`)**: Microserviço em **FastAPI (Python)** que consulta um **provedor externo** de câmbio (HTTP), aplica um **spread** configurável e retorna as cotações.
+The service acts as a proxy to external currency providers, adding a business layer (spread application) on top of the raw rates.
 
-``` mermaid
+```mermaid
 classDiagram
     class ExchangeService {
-        +getExchange(from: String, to: String): QuoteOut
+        +get_exchange_rate(base, target): ExchangeResponse
+    }
+    
+    class RatesClient {
+        +get_rate(base): dict
+    }
+    
+    class ExchangeResponse {
+        +str base
+        +str target
+        +float rate
+        +float buy
+        +float sell
     }
 
-    class QuoteOut {
-        -Double sell
-        -Double buy
-        -String date
-        -String idAccount
-    }
+    ExchangeService --> RatesClient : fetches raw data
+    RatesClient ..> External_API : https://open.er-api.com
 ```
 
-## Estrutura da requisição
+---
 
-``` mermaid
-flowchart LR
-    subgraph api [Trusted Layer]
-        direction TB
-        gateway --> account
-        gateway --> auth
-        account --> db@{ shape: cyl, label: "Database" }
-        auth --> account
-        gateway e1 @==>|""| exchange:::red
-        gateway --> product
-        gateway --> order
-        product --> db
-        order --> db
-        order --> product
-    end
-    exchange e3@==>|""| 3partyapi:::green@{label: "3rd-party API"}
-    internet e2@==>|request| gateway
-    e1@{ animate: true }
-    e2@{ animate: true }
-    e3@{ animate: true }
-    classDef red fill:#fcc
-    classDef green fill:#cfc
-    click product "#product-api" "Product API"
+## 🔌 API Reference
+
+### Endpoints
+
+| Method | Path | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/exchange/{base}/{target}` | Get the exchange rate between two currencies. | ✅ Yes |
+
+### Data Models
+
+#### `ExchangeResponse`
+```json
+{
+  "base": "USD",
+  "target": "BRL",
+  "rate": 5.15,
+  "buy": 5.253,
+  "sell": 5.047
+}
 ```
 
-## exchange.service
+---
 
-``` tree
+## 🧠 Business Logic
+
+The core logic involves fetching the market rate and applying a configurable spread to determine the "Buy" and "Sell" prices for the store.
+
+### 1. External Integration
+The service queries `https://open.er-api.com/v6/latest/{CURRENCY}` to get the latest market rates.
+
+### 2. Spread Calculation
+A spread (profit margin) is applied to the market rate.
+*   **Buy Rate**: `Market Rate * (1 + Spread)`
+*   **Sell Rate**: `Market Rate * (1 - Spread)`
+
+```python
+# Snippet from rates.py
+rate = data["rates"][target.upper()]
+spread = settings.spread  # e.g., 0.02 (2%)
+
+return {
+    "base": base.upper(),
+    "target": target.upper(),
+    "rate": rate,
+    "buy": round(rate * (1 + spread), 6),
+    "sell": round(rate * (1 - spread), 6),
+}
+```
+
+---
+
+## ⚙️ Configuration
+
+The service uses **Pydantic** for configuration management, reading from environment variables.
+
+```python
+# config.py
+class Settings(BaseSettings):
+    port: int = 8083
+    rates_base_url: str = "https://open.er-api.com"
+    spread: float = 0.02  # 2% Spread
+    jwt_algorithm: str = "HS256"
+```
+
+---
+
+## 📂 Project Structure
+
+The project follows a standard Python/FastAPI structure.
+
+```tree
 api/
-    exchange.service/
-        app/
-            __init__.py
-            main.py
-            auth.py
-            config.py
-            models.py
-            clients/
-                __init__.py
-                rates.py
-        requirements.txt
-        Dockerfile
+└── exchange.service/
+    ├── app/
+    │   ├── __init__.py
+    │   ├── main.py             # FastAPI Application
+    │   ├── auth.py             # JWT Validation
+    │   ├── config.py           # Settings
+    │   ├── models.py           # Pydantic Models
+    │   └── rates.py            # Business Logic
+    ├── requirements.txt        # Python Dependencies
+    ├── Dockerfile
+    └── k8s/                    # Kubernetes Manifests
 ```
-
-??? info "Source"
-
-    === "requirements.txt"
-
-        ``` { .txt .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/exchange.service/refs/heads/main/requirements.txt"
-        ```
-
-    === "Dockerfile"
-
-        ``` { .dockerfile .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/exchange.service/refs/heads/main/Dockerfile"
-        ```
-
-    === "main.py"
-
-        ``` { .python .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/exchange.service/refs/heads/main/app/main.py"
-        ```
-
-    === "auth.py"
-
-        ``` { .python .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/exchange.service/refs/heads/main/app/auth.py"
-        ```
-
-    === "config.py"
-
-        ``` { .python .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/exchange.service/refs/heads/main/app/config.py"
-        ```
-
-    === "models.py"
-
-        ``` { .python .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/exchange.service/refs/heads/main/app/models.py"
-        ```
-
-    === "clients/rates.py"
-
-        ``` { .python .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/exchange.service/refs/heads/main/app/clients/rates.py"
-        ```
