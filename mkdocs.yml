@@ -285,13 +285,14 @@ extra_javascript:
 
 nav:
   - Home: index.md
-  - Microservices:
-    - 1. Account API: ./account/account.md
-    - 2. Auth API: ./auth/auth.md
-    - 3. Gateway API: ./gateway/gateway.md
-    - 4. Product API: ./product/product.md
-    - 5. Order API: ./order/order.md
-    - 6. Exchange API: ./exchange/exchange.md
-    - 7. Jenkins: ./jenkins/jenkins.md
-    - 8. Kubernetes: ./k8s/kubernetes.md
+  - Services:
+    - Account: ./account/account.md
+    - Auth: ./auth/auth.md
+    - Gateway: ./gateway/gateway.md
+    - Product: ./product/product.md
+    - Order: ./order/order.md
+    - Exchange: ./exchange/exchange.md
+  - Infrastructure & DevOps:
+    - Kubernetes: ./k8s/kubernetes.md
+    - Jenkins Pipelines: ./jenkins/jenkins.md
 
