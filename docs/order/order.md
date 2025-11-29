@@ -1,301 +1,197 @@
-# Order API
+# Order Service
 
-A **Order API** gerencia os pedidos do domínio `store`, permitindo criar e consultar ordens associadas ao usuário autenticado.  
-Ela segue o padrão adotado no projeto: **interface** (`order`) e **service** (`order.service`) atrás do **gateway** e protegidos por **JWT**.
+The **Order Service** handles the lifecycle of customer orders. It allows authenticated users to place orders, automatically validating product availability and calculating totals. It acts as an orchestrator, communicating with the **Product Service** to retrieve item details.
 
-!!! info "Trusted layer e segurança"
-    Toda requisição externa entra pelo **gateway**.  
-    As rotas `/order/**` são **protegidas**: é obrigatório enviar `Authorization: Bearer <jwt>`.
+!!! info "Protected Resource"
+    *   **User Context**: All operations require a valid user context. The Gateway injects the `id-account` header, which the service uses to link orders to the correct user.
 
 ---
 
-## Visão geral
+## 🏗️ Architecture
 
-- **Interface (`order`)**: define o contrato (DTOs e Feign) consumido por outros módulos/fronts.  
-- **Service (`order.service`)**: implementação REST, regras de negócio, persistência (JPA), e migrações (Flyway).  
+The service manages a complex object graph (Orders containing Items) and integrates with external services.
 
-``` mermaid
+```mermaid
 classDiagram
-    namespace order {
+    namespace Interface_Layer {
         class OrderController {
-            +create(OrderIn orderIn): OrderOut
-            +findAll(): List<OrderOut>
-            +findById(String id): OrderOut
+            +create(String accountId, OrderIn): OrderOut
+            +findById(String accountId, String): OrderOut
+            +findAll(String accountId): List~OrderOut~
         }
-
         class OrderIn {
-            -List<OrderItemIn> items
+            +List~OrderItemIn~ items
         }
-
-        class OrderItemIn {
-            -String idProduct
-            -int quantity
-        }
-
         class OrderOut {
-            -String id
-            -String date
-            -List<OrderItemOut> items
-            -Double total
-        }
-
-        class OrderItemOut {
-            -String id
-            -ProductOut product
-            -int quantity
-            -Double total
+            +String id
+            +String date
+            +Double total
+            +List~OrderItemOut~ items
         }
     }
-    namespace order.service {
-        class OrderResource {
-            +create(OrderIn orderIn): OrderOut
-            +findAll(): List<OrderOut>
-            +findById(String id): OrderOut
-        }
-
+    namespace Core_Layer {
         class OrderService {
-            +create(OrderIn orderIn): OrderOut
-            +findAll(): List<OrderOut>
-            +findById(String id): OrderOut
+            +create(OrderIn, String): OrderOut
+            +findAll(String): List~OrderOut~
         }
-
         class OrderRepository {
-            +save(Order order): Order
-            +findAll(): List<Order>
-            +findById(String id): Optional<Order>
-        }
-
-        class Order {
-            -String id
-            -String date
-            -List~OrderItem~ items
-        }
-
-        class OrderItem {
-            -String id
-            -String idProduct
-            -int quantity
-            -Double total
-        }
-
-        class OrderModel {
-            +toEntity(OrderIn orderIn): Order
-            +toOut(Order order): OrderOut
+            +save(OrderModel): OrderModel
+            +findAllByAccountId(String): List~OrderModel~
         }
     }
-    <<Interface>> OrderController
-    OrderController ..> OrderIn
-    OrderController ..> OrderOut
+    namespace External_Integration {
+        class ProductClient {
+            +findById(String): ProductOut
+        }
+    }
 
-    <<Interface>> OrderRepository
-    OrderController <|-- OrderResource
-    OrderResource *-- OrderService
-    OrderService *-- OrderRepository
-    OrderService ..> Order
-    OrderService ..> OrderModel
-    OrderRepository ..> Order
-    Order ..> OrderItem
-    OrderOut ..> OrderItemOut
-    OrderItemOut ..> ProductOut
+    OrderController --> OrderService : delegates
+    OrderService --> OrderRepository : persists
+    OrderService --> ProductClient : verifies products
 ```
 
-## Estrutura da requisição
+---
 
-``` mermaid
-flowchart LR
-    subgraph api [Trusted Layer]
-        direction TB
-        gateway --> account
-        gateway --> auth
-        account --> db@{ shape: cyl, label: "Database" }
-        auth --> account
-        gateway --> product
-        gateway e6@==>|""| order:::red
-        product --> db
-        order e3@==>|""| db
-        order e4@==>|""| product
-    end
-    internet e1@==>|request| gateway
-    e1@{ animate: true }
-    e3@{ animate: true }
-    e4@{ animate: true }
-    e6@{ animate: true }
-    classDef red fill:#fcc
-    click order "#order-api" "Order API"
+## 🔌 API Reference
+
+### Endpoints
+
+| Method | Path | Description | Headers Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/order` | Create a new order. | `id-account` |
+| `GET` | `/order` | List all orders for the user. | `id-account` |
+| `GET` | `/order/{id}` | Retrieve order details. | `id-account` |
+
+### Data Models
+
+#### `OrderIn` (Input)
+```json
+{
+  "items": [
+    {
+      "productId": "123e4567-e89b-12d3-a456-426614174000",
+      "quantity": 2
+    }
+  ]
+}
 ```
 
-## Order
+#### `OrderOut` (Output)
+```json
+{
+  "id": "789e4567-e89b-12d3-a456-426614174999",
+  "date": "2025-11-29T10:00:00",
+  "total": 199.98,
+  "items": [
+    {
+      "productId": "123e4567-e89b-12d3-a456-426614174000",
+      "quantity": 2,
+      "total": 199.98,
+      "product": { ... } // Expanded product details
+    }
+  ]
+}
+```
 
-``` tree
+---
+
+## 🧠 Business Logic
+
+The `OrderService` orchestrates the order creation process.
+
+### Order Creation Flow
+1.  **Validate Input**: Ensures the order contains items.
+2.  **Fetch Products**: Calls the **Product Service** for each item to verify existence and retrieve current prices.
+3.  **Calculate Totals**:
+    *   Item Total = `Product Price * Quantity`
+    *   Order Total = Sum of Item Totals
+4.  **Persist**: Saves the Order and its Items to the database in a single transaction.
+
+```java
+// Snippet from OrderService.java
+@Transactional
+public OrderOut create(OrderIn in, String idAccount) {
+    // ... validation ...
+    double orderTotal = 0.0;
+    for (int i = 0; i < in.items().size(); i++) {
+        // ... fetch product ...
+        double total = product.price() * inItem.quantity();
+        // ... create item model ...
+        orderTotal += total;
+    }
+    om.setTotal(orderTotal);
+    return OrderParser.toOut(orderRepository.save(om), products);
+}
+```
+
+---
+
+## 💾 Database Schema
+
+The service uses **PostgreSQL** with a dedicated schema (`"order"`). Note the quoted schema name to avoid conflict with the SQL keyword `ORDER`.
+
+### Table: `orders`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | `VARCHAR` | Primary Key. |
+| `date` | `TIMESTAMP` | Order creation date. |
+| `account_id` | `VARCHAR` | ID of the user who placed the order. |
+| `total` | `DOUBLE` | Total value of the order. |
+
+### Table: `item`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | `VARCHAR` | Primary Key. |
+| `order_id` | `VARCHAR` | Foreign Key to `orders`. |
+| `product_id` | `VARCHAR` | ID of the product. |
+| `quantity` | `INTEGER` | Quantity purchased. |
+| `total` | `DOUBLE` | Total price for this line item. |
+
+---
+
+## ⚙️ Configuration
+
+The service is configured via `application.yml`.
+
+```yaml
+spring:
+  application:
+    name: order
+  datasource:
+    url: ${DATABASE_URL}
+  jpa:
+    properties:
+      hibernate:
+        default_schema: order # Explicit schema definition
+```
+
+---
+
+## 📂 Project Structure
+
+The project is split into two modules:
+
+1.  **Interface (`order`)**: Contains DTOs and Feign Client.
+2.  **Implementation (`order.service`)**: The Spring Boot application.
+
+```tree
 api/
-    order/
-        src/
-            main/
-                java/
-                    store/
-                        order/
-                            OrderController.java
-                            OrderIn.java
-                            OrderOut.java
-                            OrderItemIn.java
-                            OrderItemOut.java
-        pom.xml
-        Jenkinsfile
-```
-
-??? info "Source"
-
-    === "pom.xml"
-        ``` { .yaml .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order/refs/heads/main/pom.xml"
-        ```
-
-    === "Jenkinsfile"
-        ``` { .jenkinsfile .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order/refs/heads/main/Jenkinsfile"
-        ```
-
-    === "OrderController.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order/refs/heads/main/src/main/java/store/order/OrderController.java"
-        ```
-
-    === "OrderIn.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order/refs/heads/main/src/main/java/store/order/OrderIn.java"
-        ```
-
-    === "OrderOut.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order/refs/heads/main/src/main/java/store/order/OrderOut.java"
-        ```
-
-    === "OrderItemIn.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order/refs/heads/main/src/main/java/store/order/OrderItemIn.java"
-        ```
-
-    === "OrderItemOut.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order/refs/heads/main/src/main/java/store/order/OrderItemOut.java"
-        ```
-
-<!-- termynal -->
-
-``` { bash }
-> mvn clean install
-```
-
-## order.service
-
-``` tree
-api/
-    order.service/
-        k8s/
-            k8s.yaml
-        src/
-            main/
-                java/
-                    store/
-                        order/
-                            Order.java
-                            OrderItem.java
-                            OrderApplication.java
-                            OrderModel.java
-                            OrderParser.java
-                            OrderRepository.java
-                            OrderResource.java
-                            OrderService.java
-                            FeignAuthInterceptor.java
-                resources/
-                    application.yaml
-                    db/
-                        migration/
-                            V2025.08.29.001__create_schema.sql
-                            V2025.08.29.002__create_table_order.sql
-                            V2025.08.29.003__create_table_order_item.sql
-        pom.xml
-        Dockerfile
-        Jenkinsfile
-```
-
-??? info "Source"
-
-    === "pom.xml"
-        ``` { .yaml .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/pom.xml"
-        ```
-
-    === "Dockerfile"
-        ``` { .dockerfile .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/Dockerfile"
-        ```
-
-    === "Jenkinsfile"
-        ``` { .jenkinsfile .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/Jenkinsfile"
-        ```
-
-    === "k8s.yaml"
-        ``` { .yaml .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/k8s/k8s.yaml"
-        ```
-
-    === "application.yaml"
-        ``` { .yaml .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/resources/application.yaml"
-        ```
-
-    === "Order.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/java/store/order/Order.java"
-        ```
-
-    === "OrderItem.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/java/store/order/OrderItem.java"
-        ```
-
-    === "OrderApplication.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/java/store/order/OrderApplication.java"
-        ```
-
-    === "OrderService.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/java/store/order/OrderService.java"
-        ```
-
-    === "OrderResource.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/java/store/order/OrderResource.java"
-        ```
-
-    === "OrderRepository.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/java/store/order/OrderRepository.java"
-
-    === "FeignAuthInterceptor.java"
-        ``` { .java .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/java/store/order/FeignAuthInterceptor.java"
-        ```
-
-    === "V2025.08.29.001__create_schema.sql"
-        ``` { .sql .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/resources/db/migration/V2025.08.29.001__create_schema.sql"
-
-    === "V2025.08.29.002__create_table_order.sql"
-        ``` { .sql .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/resources/db/migration/V2025.08.29.002__create_table_order.sql"
-        ```
-
-    === "V2025.08.29.003__create_table_order_item.sql"
-        ``` { .sql .copy .select linenums="1" }
-        --8<-- "https://raw.githubusercontent.com/microservices-architecture-example/order.service/refs/heads/main/src/main/resources/db/migration/V2025.08.29.003__create_table_order_item.sql"
-        ```
-
-<!-- termynal -->
-
-``` { bash }
-> mvn clean package spring-boot:run
+├── order/                  # Interface Module
+│   ├── src/main/java/store/order/
+│   │   ├── OrderController.java    # Feign Client
+│   │   ├── OrderIn.java            # DTO
+│   │   └── OrderOut.java           # DTO
+│   └── pom.xml
+│
+└── order.service/          # Implementation Module
+    ├── src/main/java/store/order/
+    │   ├── OrderService.java       # Business Logic
+    │   ├── OrderResource.java      # REST Controller
+    │   ├── OrderRepository.java    # JPA Repository
+    │   └── OrderModel.java         # JPA Entity
+    ├── src/main/resources/
+    │   ├── db/migration/           # Flyway Scripts
+    │   └── application.yml         # Config
+    ├── Dockerfile
+    └── k8s/                        # Kubernetes Manifests
 ```
