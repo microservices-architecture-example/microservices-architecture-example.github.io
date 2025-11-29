@@ -111,7 +111,7 @@ The `JwtService` handles the cryptographic operations.
 ### Configuration
 *   **Algorithm**: `HMAC256` (HS256).
 *   **Expiration**: **2 hours** (120 minutes).
-*   **Issuer**: `Insper::PMA`.
+*   **Issuer**: `Luigi::Carmona`.
 
 ### Token Structure (Claims)
 The generated token contains the following claims:
@@ -120,7 +120,7 @@ The generated token contains the following claims:
 | :--- | :--- | :--- |
 | **Subject** | `sub` | User's Name. |
 | **ID** | `jti` | User's UUID (from Account Service). |
-| **Issuer** | `iss` | `Insper::PMA`. |
+| **Issuer** | `iss` | `Luigi::Carmona`. |
 | **Role** | `role` | User's Role (e.g., `USER`, `ADMIN`). |
 | **Email** | `email` | User's Email. |
 
@@ -132,7 +132,7 @@ public String generate(AccountOut account) {
     return Jwts.builder()
         .header().and()
         .id(account.id())
-        .issuer("Insper::PMA")
+        .issuer("Luigi::Carmona")
         .claims(Map.of(
             "email", account.email(),
             "role", account.role()
