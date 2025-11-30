@@ -294,5 +294,5 @@ nav:
     - Exchange: ./exchange/exchange.md
   - Infrastructure & DevOps:
     - Kubernetes: ./k8s/kubernetes.md
-    - Jenkins Pipelines: ./jenkins/index.md
+    - Jenkins Pipelines: ./jenkins/jenkins.md
 
