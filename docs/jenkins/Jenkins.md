@@ -1,36 +1,45 @@
-# Jenkins CI/CD – Store Project
+# Jenkins CI/CD Pipelines
 
-A esteira de **CI/CD** do domínio `store` é orquestrada pelo **Jenkins**.  
-Existem **dois tipos de pipelines**:
+The project's **Continuous Integration and Continuous Deployment (CI/CD)** workflow is orchestrated by **Jenkins**. The pipelines are designed to ensure code quality, automate testing, and streamline the delivery of Docker images to the registry.
 
-1) **Interfaces** (`account`, `auth`, `product`, `order`):  
-   - Empacotam artefatos/contratos usados por outros módulos.  
-   - **Não** publicam imagem Docker.  
-   - Passos: `mvn -B -DskipTests clean install`.
+## 🚀 Pipeline Strategy
 
-2) **Serviços** (`account.service`, `auth.service`, `product.service`, `order.service`, `gateway.service`, `exchange.service`):  
-   - Build Java ou Python (conforme o serviço).  
-   - **Build & push** de imagem Docker (multi-arch) para o Docker Hub.  
-   - Podem acionar **jobs de dependência** (ex.: compilar a interface antes).
+There are **two distinct pipeline types** tailored to the component architecture:
+
+### 1. Interface Pipelines
+*(Applied to: `account`, `auth`, `product`, `order`)*
+*   **Goal**: Publish shared artifacts (JARs/Contracts) for other modules to consume.
+*   **Output**: Maven Artifacts (installed to local/remote repo).
+*   **Steps**: `mvn clean install` (skipping tests for speed in this demo context).
+*   **Docker**: ❌ No image generation.
+
+### 2. Service Pipelines
+*(Applied to: `*.service` modules)*
+*   **Goal**: Deployable application artifacts.
+*   **Output**: Multi-architecture Docker Images (`linux/amd64`, `linux/arm64`).
+*   **Steps**:
+    1.  **Dependencies**: Trigger upstream Interface jobs to ensure contracts are up-to-date.
+    2.  **Build**: Compile the application (`mvn package`).
+    3.  **Docker Build & Push**: Build and push images to Docker Hub using `buildx`.
 
 ---
 
-## Status atual dos pipelines
+## 📊 Build Status
 
-A captura abaixo mostra o painel do Jenkins com os últimos runs de todas as pipelines ativas:
+The Jenkins dashboard provides a centralized view of all active pipelines, their health, and execution history.
 
-![Jenkins Pipelines](../img/Jenkins.png)
+![Jenkins Dashboard](../assets/jenkins_dashboard.jpg)
 
 ---
 
-## Padrões de pipeline
+## 🛠️ Pipeline Definitions
 
-### 1) Interfaces – apenas build Maven
+### Interface Pipeline (Maven Only)
+Simple pipeline to compile and install the artifact.
 
 ```groovy
 pipeline {
     agent any
-
     stages {
         stage('Build') {
             steps {
@@ -41,25 +50,21 @@ pipeline {
 }
 ```
 
-**Objetivo:** disponibilizar artefatos (JARs) para que os serviços possam compilar contra as últimas mudanças de contrato/DTOs.
-
----
-
-
-### 2) Serviços – build, dependências e imagem Docker
+### Service Pipeline (Docker Build & Push)
+Comprehensive pipeline handling dependencies, build, and multi-arch image publication.
 
 ```groovy
 pipeline {
     agent any
     environment {
-        SERVICE = <nome_serviço>            // nome lógico do serviço
-        NAME = "microservices-architecture-example/${env.SERVICE}"   // repositório de imagem no Docker Hub
+        SERVICE = "account-service" // Example
+        NAME = "microservices-architecture-example/${env.SERVICE}"
     }
     stages {
-        stage('Dependecies') {
+        stage('Dependencies') {
             steps {
-                // dispara o job da interface correspondente e aguarda concluir
-                build job: <nome_interface>, wait: true
+                // Ensure the Interface contract is built first
+                build job: 'account', wait: true
             }
         }
         stage('Build') { 
@@ -73,16 +78,17 @@ pipeline {
                     credentialsId: 'dockerhub-credential',
                     usernameVariable: 'USERNAME',
                     passwordVariable: 'TOKEN')]) {
+                    
                     sh "docker login -u $USERNAME -p $TOKEN"
 
-                    // builder multi-arch efêmero
-                    sh "docker buildx create --use --platform=linux/arm64,linux/amd64 --node multi-platform-builder-${env.SERVICE} --name multi-platform-builder-${env.SERVICE}"
+                    // Create ephemeral multi-arch builder
+                    sh "docker buildx create --use --platform=linux/arm64,linux/amd64 --name builder-${env.SERVICE}"
 
-                    // build + push tags :latest e :BUILD_ID
+                    // Build and Push tags: :latest and :BUILD_ID
                     sh "docker buildx build --platform=linux/arm64,linux/amd64 --push --tag ${env.NAME}:latest --tag ${env.NAME}:${env.BUILD_ID} -f Dockerfile ."
 
-                    // limpeza do builder
-                    sh "docker buildx rm --force multi-platform-builder-${env.SERVICE}"
+                    // Cleanup
+                    sh "docker buildx rm --force builder-${env.SERVICE}"
                 }
             }
         }
@@ -90,51 +96,39 @@ pipeline {
 }
 ```
 
-**Objetivo:** gerar imagem Docker pronta para deploy (multi-arch), com versionamento por `BUILD_ID` e tag `latest`.
-
 ---
 
-## Fluxo resumido
+## 🔄 Workflow Diagram
 
 ```mermaid
 flowchart TB
     subgraph Jenkins
-        I[Job Interface\nmvn clean install] -->|artefato| S[Job Serviço\nmvn package]
-        S --> D[Buildx: build & push Docker\n:latest e :BUILD_ID]
+        I[Interface Job\nmvn clean install] -->|Artifact| S[Service Job\nmvn package]
+        S --> D[Docker Buildx\nBuild & Push]
     end
     D --> REG[(Docker Hub)]
+    REG -->|Pull| K8S[Kubernetes Cluster]
 ```
 
 ---
 
-## Localização dos Jenkinsfiles
+## 📂 Jenkinsfile Locations
 
-Os `Jenkinsfile` de cada componente estão **nas documentações das respectivas APIs**: 
+The `Jenkinsfile` for each component is located in its respective source repository. You can view the specific configuration in the API documentation:
 
-| Componente         | Documentação                                       |
-|--------------------|----------------------------------------------------|
-| Account (interface)| [Account API](../account/account.md)               |
-| Account.service    | [Account API](../account/account.md)               |
-| Auth (interface)   | [Auth API](../auth/auth.md)                     |
-| Auth.service       | [Auth API](../auth/auth.md)                     |
-| Gateway.service    | [Gateway API](../gateway/gateway.md)               |
-| Product (interface)| [Product API](../product/product.md)               |
-| Product.service    | [Product API](../product/product.service.md)               |
-| Order (interface)  | [Order API](../order/order.md)                   |
-| Order.service      | [Order API](../order/order.service.md)                   |
-| Exchange.service   | [Exchange API](../exchange/exchange.md)            |
-
-
-> Cada página detalha o `Jenkinsfile` correspondente via bloco **Source**.
+| Component | Documentation |
+| :--- | :--- |
+| **Account** | [Account API](../account/account.md) |
+| **Auth** | [Auth API](../auth/auth.md) |
+| **Gateway** | [Gateway API](../gateway/gateway.md) |
+| **Product** | [Product API](../product/product.md) |
+| **Order** | [Order API](../order/order.md) |
+| **Exchange** | [Exchange API](../exchange/exchange.md) |
 
 ---
 
-## Notas operacionais
+## ⚙️ Operational Notes
 
-- **Credenciais**: o push de imagens usa o secret `dockerhub-credential` (usuário/senha).  
-- **Multi-arch**: as imagens são publicadas para `linux/amd64` e `linux/arm64` via `buildx`.  
-- **Dependências**: serviços disparam o job da interface para garantir que compilam contra a versão mais recente dos contratos.  
-
----
-
-✅ *Este documento confirma que todos os pipelines necessários estão configurados e operando conforme o desenho do projeto: interfaces compilam artefatos; serviços geram e publicam imagens Docker.*
+*   **Credentials**: Docker Hub access is managed via the `dockerhub-credential` secret in Jenkins.
+*   **Multi-Architecture**: We use `docker buildx` to support both x86 (AMD64) and ARM64 architectures, ensuring compatibility with various cloud instances and local development machines (e.g., Apple Silicon).
+*   **Dependency Management**: The `build job: ..., wait: true` step ensures that changes in the Interface module are immediately reflected in the Service build.
